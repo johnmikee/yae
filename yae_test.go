@@ -264,3 +264,63 @@ func TestDevEnvBiggerStruct(t *testing.T) {
 		}
 	}
 }
+
+func TestSkipFields(t *testing.T) {
+	type Conf struct {
+		DBAddress string `json:"db_address"`
+		DBName    string `json:"db_name"`
+		DBPass    string `json:"db_pass"`
+		DBPort    string `json:"db_port"`
+		DBUser    string `json:"db_user"`
+	}
+
+	// set the keys
+	var cfg Conf
+	config := &Env{
+		Name:         "test",
+		Type:         JSON,
+		Path:         ".",
+		EnvPrefix:    "prefixed",
+		ConfigStruct: &cfg,
+	}
+
+	envKeys := config.GetKeys()
+
+	for _, a := range envKeys {
+		err := keyring.Set(a, "testService", "testpassword")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// there is some small delay in getting the keys
+	time.Sleep(1 * time.Second)
+
+	var cf Conf
+	err := Get(
+		EnvType(DEV),
+		&Env{
+			Name:         "testService",
+			EnvPrefix:    "YAE",
+			ConfigStruct: &cf,
+			Type:         JSON,
+			SkipFields:   []string{"DBPass", "DBPort"},
+		},
+	)
+
+	assert.NoError(t, err)
+
+	assert.Equal(t, "testpassword", cf.DBAddress)
+	assert.Equal(t, "testpassword", cf.DBName)
+	assert.Equal(t, "", cf.DBPass)
+	assert.Equal(t, "", cf.DBPort)
+	assert.Equal(t, "testpassword", cf.DBUser)
+
+	// remove the secrets
+	for _, a := range envKeys {
+		err := keyring.Delete(a, "testService")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}

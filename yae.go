@@ -19,14 +19,16 @@ type Env struct {
 	Path         string      // Path to the config file
 	EnvPrefix    string      // Prefix for environment variable names
 	ConfigStruct interface{} // Struct to store the config values
+	SkipFields   []string    // Fields to skip when loading from env
 }
 
 // EnvType represents the environment type.
 type EnvType string
 
 const (
-	DEV  EnvType = "dev"
-	PROD EnvType = "prod"
+	LOCAL EnvType = "local" // Local environment will use the keychain
+	DEV   EnvType = "dev"   // Dev environment will use the keychain
+	PROD  EnvType = "prod"  // Prod environment will use the config file or env vars
 )
 
 type ConfigType string
@@ -36,14 +38,13 @@ const (
 	YAML ConfigType = "yaml"
 )
 
+var CUSTOM ConfigType = "" // This will search for whatever custom tag you specify
+
 // Get retrieves the configuration based on the specified environment type.
 func Get(t EnvType, c *Env) error {
 	switch t {
-	case DEV:
-		return BuildDevEnv(
-			c,
-			nil,
-		)
+	case DEV, LOCAL:
+		return BuildDevEnv(c, nil)
 	case PROD:
 		return LoadConfig(c)
 	default:
@@ -55,8 +56,7 @@ func Get(t EnvType, c *Env) error {
 func LoadConfig(c *Env) error {
 	file, err := os.Open(c.Name)
 	if err != nil {
-		// If the file doesn't exist, fallback to environmental variables
-		return loadFromEnv(c)
+		return c.loadFromEnv() // If the file doesn't exist, fallback to environmental variables
 	}
 	defer file.Close()
 
@@ -66,9 +66,9 @@ func LoadConfig(c *Env) error {
 	}
 
 	switch strings.ToLower(string(c.Type)) {
-	case "json":
+	case string(JSON):
 		err = json.Unmarshal(data, &c.ConfigStruct)
-	case "yaml":
+	case string(YAML):
 		err = yaml.Unmarshal(data, c.ConfigStruct)
 	default:
 		return fmt.Errorf("unsupported file type: %s", c.Type)
@@ -77,15 +77,21 @@ func LoadConfig(c *Env) error {
 	return err
 }
 
-func loadFromEnv(c *Env) error {
+func (c *Env) loadFromEnv() error {
 	valueOf := reflect.ValueOf(c.ConfigStruct).Elem()
 	typeOf := valueOf.Type()
 	for i := 0; i < valueOf.NumField(); i++ {
-		field := valueOf.Field(i)
 		fieldType := typeOf.Field(i)
 
+		if contains(c.SkipFields, fieldType.Name) {
+			i-- // Decrement the counter so we don't skip the next field
+			continue
+		}
+
+		field := valueOf.Field(i)
+
 		var envName string
-		if tag := fieldType.Tag.Get("json"); tag != "" {
+		if tag := fieldType.Tag.Get(string(c.Type)); tag != "" {
 			envName = strings.ToUpper(tag)
 		} else if tag := fieldType.Tag.Get("yaml"); tag != "" {
 			envName = strings.ToUpper(tag)
@@ -151,27 +157,31 @@ func setField(field reflect.Value, value string) error {
 	return nil
 }
 
+// GetKeys returns the keys for the struct.
 func (c *Env) GetKeys() []string {
 	var keys []string
 
 	valueOf := reflect.ValueOf(c.ConfigStruct).Elem()
 	typeOf := valueOf.Type()
+
 	for i := 0; i < valueOf.NumField(); i++ {
 		fieldType := typeOf.Field(i)
-		if tag := fieldType.Tag.Get(string(c.Type)); tag != "" {
-			keys = append(keys, tag)
+		if !contains(c.SkipFields, fieldType.Name) {
+			if tag := fieldType.Tag.Get(string(c.Type)); tag != "" {
+				keys = append(keys, tag)
+			}
 		}
 	}
 	return keys
 }
 
 // BuildDevEnv fills the values of the struct with the values from the keychain.
-func BuildDevEnv(c *Env, secrets *Secrets) error {
+func BuildDevEnv(c *Env, secrets *Secrets, skipFields ...string) error {
 	if secrets == nil {
 		envKeys := c.GetKeys()
 		secrets = GetConfig(c.Name, envKeys...)
 	}
-	secretMap := secrets.ToMap()
+	secretMap := secrets.ToMap(skipFields...)
 
 	valueOf := reflect.ValueOf(c.ConfigStruct).Elem()
 	typeOf := valueOf.Type()
@@ -186,6 +196,8 @@ func BuildDevEnv(c *Env, secrets *Secrets) error {
 			tag = fieldType.Tag.Get("json")
 		case "yaml":
 			tag = fieldType.Tag.Get("yaml")
+		case CUSTOM:
+			tag = fieldType.Tag.Get(string(CUSTOM))
 		default:
 			continue
 		}

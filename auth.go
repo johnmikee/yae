@@ -2,6 +2,7 @@ package yae
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/zalando/go-keyring"
 )
@@ -90,14 +91,25 @@ func getKey(service, key string) (string, bool) {
 }
 
 // Optionally make it a map
-func (s *Secrets) ToMap() map[string]string {
+func (s *Secrets) ToMap(skipFields ...string) map[string]string {
 	result := make(map[string]string)
 
 	for _, secret := range *s {
-		result[secret.Name] = secret.Value
+		if !contains(skipFields, secret.Name) {
+			result[secret.Name] = secret.Value
+		}
 	}
 
 	return result
+}
+
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if strings.Contains(e, a) {
+			return true
+		}
+	}
+	return false
 }
 
 func setInteractive(is bool) {
