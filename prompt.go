@@ -19,8 +19,7 @@ type PasswordReader interface {
 }
 
 // StdInPasswordReader default stdin password reader
-type StdInPasswordReader struct {
-}
+type StdInPasswordReader struct{}
 
 // ReadPassword reads password from stdin
 func (pr StdInPasswordReader) ReadPassword() (string, error) {

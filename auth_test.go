@@ -315,5 +315,4 @@ func TestGetConfig(t *testing.T) {
 	if len(*secrets) != 2 {
 		t.Errorf("Expected 2 secrets, got %d", len(*secrets))
 	}
-
 }

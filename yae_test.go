@@ -1,10 +1,12 @@
-package yae
+package yae_test
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/johnmikee/yae"
 	"github.com/stretchr/testify/assert"
 	"github.com/zalando/go-keyring"
 	"gopkg.in/yaml.v2"
@@ -13,6 +15,11 @@ import (
 type AppConfig struct {
 	APIKey      string `json:"api_key" yaml:"api_key"`
 	DatabaseURL string `json:"database_url" yaml:"database_url"`
+}
+
+type ConfigStruct struct {
+	Field1 string `json:"field1" yaml:"field1"`
+	Field2 int    `json:"field2" yaml:"field2"`
 }
 
 var (
@@ -28,11 +35,13 @@ var (
 func TestEnvNoPrefix(t *testing.T) {
 	os.Setenv("API_KEY", "abc123")
 	os.Setenv("DATABASE_URL", "localhost:5432")
+	defer os.Unsetenv("API_KEY")
+	defer os.Unsetenv("DATABASE_URL")
 
 	var appConfig AppConfig
-	err := Get(
-		PROD,
-		&Env{
+	err := yae.Get(
+		yae.PROD,
+		&yae.Env{
 			Name:         testJsonfile,
 			Type:         "json",
 			ConfigStruct: &appConfig,
@@ -56,9 +65,9 @@ func TestEnvWithPrefix(t *testing.T) {
 	defer os.Unsetenv("YAE_DATABASE_URL")
 
 	var appConfig AppConfig
-	err := Get(
-		PROD,
-		&Env{
+	err := yae.Get(
+		yae.PROD,
+		&yae.Env{
 			Name:         testJsonfile,
 			Type:         "json",
 			EnvPrefix:    "YAE",
@@ -82,11 +91,11 @@ func TestJSON(t *testing.T) {
 	defer os.Remove(testJsonfile)
 
 	var appConfig AppConfig
-	err = Get(
-		PROD,
-		&Env{
+	err = yae.Get(
+		yae.PROD,
+		&yae.Env{
 			Name:         testJsonfile,
-			Type:         JSON,
+			Type:         yae.JSON,
 			ConfigStruct: &appConfig,
 		},
 	)
@@ -113,11 +122,11 @@ func TestYAML(t *testing.T) {
 	defer os.Remove(testYamlfile)
 
 	var appConfig AppConfig
-	err = Get(
-		PROD,
-		&Env{
+	err = yae.Get(
+		yae.PROD,
+		&yae.Env{
 			Name:         testYamlfile,
-			Type:         YAML,
+			Type:         yae.YAML,
 			ConfigStruct: &appConfig,
 		},
 	)
@@ -135,9 +144,9 @@ func TestInvalidFile(t *testing.T) {
 	defer os.Remove(testJsonfile)
 
 	var appConfig AppConfig
-	err = Get(
-		PROD,
-		&Env{
+	err = yae.Get(
+		yae.PROD,
+		&yae.Env{
 			Name:         testJsonfile,
 			Type:         "json",
 			ConfigStruct: appConfig,
@@ -160,9 +169,9 @@ func TestDevEnvSetKeys(t *testing.T) {
 	}
 	secrets := []Secrets{}
 
-	config := &Env{
+	config := &yae.Env{
 		Name:         "test",
-		Type:         JSON,
+		Type:         yae.JSON,
 		Path:         ".",
 		EnvPrefix:    "prefixed",
 		ConfigStruct: &appConfig,
@@ -217,9 +226,9 @@ func TestDevEnvBiggerStruct(t *testing.T) {
 
 	// set the keys
 	var cfg Conf
-	config := &Env{
+	config := &yae.Env{
 		Name:         "test",
-		Type:         JSON,
+		Type:         yae.JSON,
 		Path:         ".",
 		EnvPrefix:    "prefixed",
 		ConfigStruct: &cfg,
@@ -238,13 +247,13 @@ func TestDevEnvBiggerStruct(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	var cf Conf
-	err := Get(
-		EnvType(DEV),
-		&Env{
+	err := yae.Get(
+		yae.DEV,
+		&yae.Env{
 			Name:         "testService",
 			EnvPrefix:    "YAE",
 			ConfigStruct: &cf,
-			Type:         JSON,
+			Type:         yae.JSON,
 		},
 	)
 
@@ -276,9 +285,9 @@ func TestSkipFields(t *testing.T) {
 
 	// set the keys
 	var cfg Conf
-	config := &Env{
+	config := &yae.Env{
 		Name:         "test",
-		Type:         JSON,
+		Type:         yae.JSON,
 		Path:         ".",
 		EnvPrefix:    "prefixed",
 		ConfigStruct: &cfg,
@@ -297,13 +306,13 @@ func TestSkipFields(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	var cf Conf
-	err := Get(
-		EnvType(DEV),
-		&Env{
+	err := yae.Get(
+		yae.DEV,
+		&yae.Env{
 			Name:         "testService",
 			EnvPrefix:    "YAE",
 			ConfigStruct: &cf,
-			Type:         JSON,
+			Type:         yae.JSON,
 			SkipFields:   []string{"DBPass", "DBPort"},
 		},
 	)
@@ -323,4 +332,77 @@ func TestSkipFields(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func TestLoadConfig(t *testing.T) {
+	t.Run("FileNotFound", func(t *testing.T) {
+		env := &yae.Env{
+			Name:         "nonexistent.json",
+			Type:         yae.JSON,
+			ConfigStruct: &ConfigStruct{},
+			Debug:        true,
+		}
+
+		err := yae.LoadConfig(env)
+		if err == nil {
+			t.Errorf("expected error, got nil")
+		}
+	})
+
+	t.Run("FileFound", func(t *testing.T) {
+		fileContent := `{"field1": "value1", "field2": 42}`
+		fileName := "config.json"
+		filePath := filepath.Join(os.TempDir(), fileName)
+		if err := os.WriteFile(filePath, []byte(fileContent), 0o644); err != nil {
+			t.Fatalf("failed to write test config file: %v", err)
+		}
+		defer os.Remove(filePath)
+
+		env := &yae.Env{
+			Name:         fileName,
+			Path:         os.TempDir(),
+			Type:         yae.JSON,
+			ConfigStruct: &ConfigStruct{},
+			Debug:        true,
+		}
+
+		err := yae.LoadConfig(env)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		config := env.ConfigStruct.(*ConfigStruct)
+		if config.Field1 != "value1" || config.Field2 != 42 {
+			t.Errorf("expected field1=value1 and field2=42, got field1=%s and field2=%d", config.Field1, config.Field2)
+		}
+	})
+
+	t.Run("YamlFile", func(t *testing.T) {
+		fileContent := `field1: "value1"
+field2: 42`
+		fileName := "config.yaml"
+		filePath := filepath.Join(os.TempDir(), fileName)
+		if err := os.WriteFile(filePath, []byte(fileContent), 0o644); err != nil {
+			t.Fatalf("failed to write test config file: %v", err)
+		}
+		defer os.Remove(filePath)
+
+		env := &yae.Env{
+			Name:         fileName,
+			Path:         os.TempDir(),
+			Type:         yae.YAML,
+			ConfigStruct: &ConfigStruct{},
+			Debug:        true,
+		}
+
+		err := yae.LoadConfig(env)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		config := env.ConfigStruct.(*ConfigStruct)
+		if config.Field1 != "value1" || config.Field2 != 42 {
+			t.Errorf("expected field1=value1 and field2=42, got field1=%s and field2=%d", config.Field1, config.Field2)
+		}
+	})
 }

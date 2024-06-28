@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -15,6 +17,7 @@ import (
 // Config holds the configuration parameters for retrieving a config.
 type Env struct {
 	Name         string      // Name of the config file
+	Debug        bool        // Print debug messages
 	Type         ConfigType  // Type of the config file ("json" or "yaml")
 	Path         string      // Path to the config file
 	EnvPrefix    string      // Prefix for environment variable names
@@ -38,14 +41,25 @@ const (
 	YAML ConfigType = "yaml"
 )
 
-var CUSTOM ConfigType = "" // This will search for whatever custom tag you specify
+var (
+	CUSTOM ConfigType   = "" // This will search for whatever custom tag you specify
+	log    *slog.Logger      // Logger for debug messages
+)
+
+func init() {
+	log = logger(true)
+}
 
 // Get retrieves the configuration based on the specified environment type.
 func Get(t EnvType, c *Env) error {
+	log = logger(c.Debug)
+
 	switch t {
 	case DEV, LOCAL:
+		log.Debug("loading config from keychain")
 		return BuildDevEnv(c, nil)
 	case PROD:
+		log.Debug("loading config from file", "file", c.Name, "path", c.Path)
 		return LoadConfig(c)
 	default:
 		return fmt.Errorf("unsupported environment type: %s", t)
@@ -54,9 +68,27 @@ func Get(t EnvType, c *Env) error {
 
 // LoadConfig loads the config from the file or falls back to environmental variables.
 func LoadConfig(c *Env) error {
-	file, err := os.Open(c.Name)
+	// first check if the file exists, if not, try the full path, and finally fallback to env
+	var confFile string
+
+	f, fp := buildFilePath(c.Name, c.Path)
+	if _, err := os.Stat(f); os.IsNotExist(err) {
+		if _, err := os.Stat(fp); os.IsNotExist(err) {
+			log.Debug("config file not found, falling back to environment variables")
+			if err := c.loadFromEnv(); err != nil {
+				return fmt.Errorf("failed to load config from file and env: %w", err)
+			}
+			return nil
+		} else {
+			confFile = fp
+		}
+	} else {
+		confFile = f
+	}
+
+	file, err := os.Open(confFile)
 	if err != nil {
-		return c.loadFromEnv() // If the file doesn't exist, fallback to environmental variables
+		return fmt.Errorf("failed to open file: %s, error:%w", confFile, err)
 	}
 	defer file.Close()
 
@@ -77,44 +109,73 @@ func LoadConfig(c *Env) error {
 	return err
 }
 
+func buildFilePath(name, path string) (string, string) {
+	if path == "" {
+		path = "./"
+	}
+	return name, filepath.Join(path, name)
+}
+
 func (c *Env) loadFromEnv() error {
+	log.Debug("loading config from env", "prefix", c.EnvPrefix)
+
 	valueOf := reflect.ValueOf(c.ConfigStruct).Elem()
 	typeOf := valueOf.Type()
+
+	// we dont want to stop the loop if we skip a field so we add it to the slice and check at the end
+	var envErr []error
 	for i := 0; i < valueOf.NumField(); i++ {
 		fieldType := typeOf.Field(i)
-
+		log.Debug("loading field", "field", fieldType.Name, "type", fieldType.Type.String())
 		if contains(c.SkipFields, fieldType.Name) {
-			i-- // Decrement the counter so we don't skip the next field
 			continue
 		}
 
 		field := valueOf.Field(i)
+		envName := getEnvName(fieldType, c.Type, c.EnvPrefix)
 
-		var envName string
-		if tag := fieldType.Tag.Get(string(c.Type)); tag != "" {
-			envName = strings.ToUpper(tag)
-		} else if tag := fieldType.Tag.Get("yaml"); tag != "" {
-			envName = strings.ToUpper(tag)
-		} else {
-			envName = strings.ToUpper(fieldType.Tag.Get("env"))
-			if envName == "" {
-				envName = fieldType.Name
-			}
-		}
-
-		if c.EnvPrefix != "" {
-			envName = c.EnvPrefix + "_" + envName
-		}
+		log.Debug("loading env", "env", envName)
 
 		if envValue := os.Getenv(envName); envValue != "" {
 			err := setField(field, envValue)
 			if err != nil {
 				return fmt.Errorf("failed to set field %s: %s", fieldType.Name, err)
 			}
+		} else {
+			envErr = append(envErr, fmt.Errorf("env not found: %s", envName))
 		}
 	}
 
+	// check the errors
+	if len(envErr) > 0 {
+		var sb strings.Builder
+		for _, err := range envErr {
+			log.Debug("error loading env", "error", err.Error())
+			sb.WriteString(err.Error() + "\n")
+		}
+		return fmt.Errorf(sb.String())
+	}
 	return nil
+}
+
+func getEnvName(fieldType reflect.StructField, configType ConfigType, envPrefix string) string {
+	var envName string
+	if tag := fieldType.Tag.Get(string(configType)); tag != "" {
+		envName = strings.ToUpper(tag)
+	} else if tag := fieldType.Tag.Get("yaml"); tag != "" {
+		envName = strings.ToUpper(tag)
+	} else {
+		envName = strings.ToUpper(fieldType.Tag.Get("env"))
+		if envName == "" {
+			envName = fieldType.Name
+		}
+	}
+
+	if envPrefix != "" {
+		envName = envPrefix + "_" + envName
+	}
+
+	return envName
 }
 
 // setField sets the value of a field in the struct based on its type.
@@ -210,4 +271,18 @@ func BuildDevEnv(c *Env, secrets *Secrets, skipFields ...string) error {
 		}
 	}
 	return nil
+}
+
+func logger(debug bool) *slog.Logger {
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: func() slog.Level {
+		if debug {
+			return slog.LevelDebug
+		}
+		return slog.LevelInfo
+	}()})
+
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
+	return logger
 }

@@ -35,7 +35,6 @@ func notFound(errString string) bool {
 	// if that is returned we know to add the secret. otherwise something
 	// occurred that we need to handle differently.
 	return errString == "secret not found in keyring"
-
 }
 
 func checkKey(service, key string) (string, bool) {
